@@ -1,0 +1,503 @@
+﻿<#@ template language="C#" HostSpecific="True" Debug="True" #>
+<#@ output extension="cs" #>
+<#@ assembly name="System.Core" #>
+<#@ assembly name="System.Data.Linq" #>
+<#@ ScaffoldingAssembly Processor="ScaffoldingAssemblyLoader" #>
+
+<#
+string routePrefix;
+if (String.IsNullOrEmpty(AreaName)) 
+{
+	routePrefix = ControllerRootName;
+}
+else
+{
+	routePrefix = AreaName + "/" + ControllerRootName;
+}
+#>
+<#@ include file="ModelMetadataFunctions.cs.include.t4" #>
+<#@ import namespace="System.Collections" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="Microsoft.AspNet.Scaffolding.Core.Metadata" #>
+<#@ parameter type="System.String" name="ControllerName" #>
+<#@ parameter type="System.String" name="ControllerRootName" #>
+<#@ parameter type="System.String" name="Namespace" #>
+<#@ parameter type="System.String" name="AreaName" #>
+<#@ parameter type="System.String" name="ContextTypeName" #>
+<#@ parameter type="System.String" name="ModelTypeName" #>
+<#@ parameter type="System.String" name="ModelVariable" #>
+<#@ parameter type="Microsoft.AspNet.Scaffolding.Core.Metadata.ModelMetadata" name="ModelMetadata" #>
+<#@ parameter type="System.String" name="EntitySetVariable" #>
+<#@ parameter type="System.Boolean" name="UseAsync" #>
+<#@ parameter type="System.Boolean" name="IsOverpostingProtectionRequired" #>
+<#@ parameter type="System.String" name="BindAttributeIncludeText" #>
+<#@ parameter type="System.String" name ="OverpostingWarningMessage" #>
+<#@ parameter type="System.Collections.Generic.HashSet<System.String>" name="RequiredNamespaces" #>
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Entity;
+using System.Linq;
+using System.Linq.Dynamic;
+<# if (UseAsync) { #>
+using System.Threading.Tasks;
+<# } #>
+using System.Net;
+using DAL.Repository.Persistence;
+using SCMS.ViewModels;
+using System.Web;
+using System.Web.Mvc;
+using SCMS.DataExport;
+using SCMS.Actions;
+<# foreach (var namespaceName in RequiredNamespaces) { #>
+using <#= namespaceName #>;
+<# } #>
+
+namespace <#= Namespace #>
+{
+<#
+	var contextTypeName = ContextTypeName;
+	var entitySetName = ModelMetadata.EntitySetName;
+	var entitySetVar = EntitySetVariable ?? (String.IsNullOrEmpty(entitySetName) ? entitySetName : (entitySetName.Substring(0, length:1).ToLowerInvariant() + entitySetName.Substring(1)));
+	var primaryKeyName = ModelMetadata.PrimaryKeys[0].PropertyName;
+	var primaryKeyShortTypeName = ModelMetadata.PrimaryKeys[0].ShortTypeName;
+	var primaryKeyDefaultValue = ModelMetadata.PrimaryKeys[0].DefaultValue;
+	var primaryKeyType = ModelMetadata.PrimaryKeys[0].TypeName;
+	var primaryKeyNullableTypeName = GetNullableTypeName(primaryKeyType, primaryKeyShortTypeName);
+	var lambdaVar = ModelVariable[0];
+	var relatedProperties = ModelMetadata.RelatedEntities.ToDictionary(item => item.AssociationPropertyName);
+
+	string bindAttribute;
+	if (IsOverpostingProtectionRequired)
+	{
+		bindAttribute = String.Format("[Bind(Include = \"{0}\")] ", BindAttributeIncludeText);
+	}
+	else
+	{
+		bindAttribute = String.Empty;
+	}
+#>
+	public class <#= ControllerName #> : Controller
+	{
+		private IEntityService<<#= ModelTypeName #>> repository = null; 
+		private SCMSContext db = new SCMSContext();
+		// GET: <#= routePrefix #>
+		public <#=ControllerName #>()  
+		   {  
+				this.repository = new EntityService<<#= ModelTypeName #>>(db);  
+		   }  
+		public <#=ControllerName #>(IEntityService<<#= ModelTypeName #>> repository)  
+		   {  
+				this.repository = repository;  
+		   }  
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Index()
+<# } else { #>
+		public ActionResult Index()
+<# } #>
+		{
+		var records = new PagedList<<#= ModelTypeName #>>();
+<#  var includeExpressions = "";
+		includeExpressions = String.Join("", relatedProperties.Values.Select(property => String.Format("{0} => {0}.{1}", lambdaVar, property.AssociationPropertyName)));
+#>
+<# if(!String.IsNullOrEmpty(includeExpressions)) { #>
+		records.Content = repository.GetAll(<#= includeExpressions #>).OrderBy("Id DESC")
+<#		if (UseAsync) { #>
+						.Take(20).ToListAsync();
+<#		} else { #>
+						.Take(20).ToList();
+<#		} #>
+
+		// Count
+		records.TotalRecords = repository.GetAll(<#= includeExpressions #>).Count();
+
+<# } else { #>
+		records.Content = repository.GetAll()
+						.OrderBy("Id DESC")
+<#		if (UseAsync) { #>
+						.Take(20).ToListAsync();
+<#		} else { #>
+						.Take(20).ToList();
+<#		} #>
+		// Count
+		records.TotalRecords = repository.GetAll().Count();
+
+<# } #>
+			records.CurrentPage = 1;
+			records.PageSize = 20;
+			return View(records);
+		}
+
+
+		
+		[HttpGet]
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Grid(string filter = null, int page = 1, 
+		 int pageSize = 20, string sort = "Id", string sortdir = "DESC")
+<# } else { #>
+		public ActionResult Grid(string filter = null, int page = 1, 
+		 int pageSize = 20, string sort = "Id", string sortdir = "DESC")
+<# } #>
+		{
+		var records = new PagedList<<#= ModelTypeName #>>();
+		ViewBag.filter = filter;
+<# if(!String.IsNullOrEmpty(includeExpressions)) { #>
+		records.Content = repository.GetList(x => filter == null
+		<# IEnumerable<PropertyMetadata> properties = ModelMetadata.Properties;
+			foreach (PropertyMetadata property in properties) {
+			if (property.Scaffold && !property.IsPrimaryKey && !property.IsForeignKey) {
+				if (property.IsAssociation && GetRelatedModelMetadata(property) == null) {
+					continue;
+				}	#>
+							|| (x.<#= GetValueExpression(property) #>.ToString().ToLower().Contains(filter.ToLower()))
+		<#
+			}
+		}	#>,<#= includeExpressions #>)
+					.OrderBy(sort + " " + sortdir)
+					.Skip((page - 1) * pageSize)
+<#		if (UseAsync) { #>
+					.Take(pageSize).ToListAsync();
+<#		} else { #>
+					.Take(pageSize).ToList();
+<#		} #>
+
+		// Count
+		records.TotalRecords = repository.GetList(x => filter == null 
+		<# foreach (PropertyMetadata property in properties) {
+			if (property.Scaffold && !property.IsPrimaryKey && !property.IsForeignKey) {
+				if (property.IsAssociation && GetRelatedModelMetadata(property) == null) {
+					continue;
+				}	#>
+							|| (x.<#= GetValueExpression(property) #>.ToString().ToLower().Contains(filter.ToLower()))
+		<#
+			}
+		}	#>,<#= includeExpressions #>).Count();
+
+<# } else { #>
+		records.Content = repository.GetList(x => filter == null
+		<# IEnumerable<PropertyMetadata> properties = ModelMetadata.Properties;
+			foreach (PropertyMetadata property in properties) {
+			if (property.Scaffold && !property.IsPrimaryKey && !property.IsForeignKey) {
+				if (property.IsAssociation && GetRelatedModelMetadata(property) == null) {
+					continue;
+				}	#>
+							|| (x.<#= GetValueExpression(property) #>.ToString().ToLower().Contains(filter.ToLower()))
+		<#
+			}
+		}	#>)
+					.OrderBy(sort + " " + sortdir)
+					.Skip((page - 1) * pageSize)
+<#		if (UseAsync) { #>
+					.Take(pageSize).ToListAsync();
+<#		} else { #>
+					.Take(pageSize).ToList();
+<#		} #>
+		// Count
+		records.TotalRecords = repository.GetList(x => filter == null 
+		<# foreach (PropertyMetadata property in properties) {
+			if (property.Scaffold && !property.IsPrimaryKey && !property.IsForeignKey) {
+				if (property.IsAssociation && GetRelatedModelMetadata(property) == null) {
+					continue;
+				}	#>
+							|| (x.<#= GetValueExpression(property) #>.ToString().ToLower().Contains(filter.ToLower()))
+		<#
+			}
+		}	#>).Count();
+
+<# } #>
+			records.CurrentPage = page;
+			records.PageSize = pageSize;
+			return PartialView("Grid",records);
+		}
+
+		
+		// GET: <#= routePrefix #>/Details/5
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Details(<#= primaryKeyNullableTypeName #> id)
+<# } else { #>
+		public ActionResult Details(<#= primaryKeyNullableTypeName #> id)
+<# } #>
+		{
+			if (id == null)
+			{
+				return new HttpStatusCodeResult(HttpStatusCode.BadRequest);
+			}
+<# if (UseAsync) {
+	if(!String.IsNullOrEmpty(includeExpressions)) { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = await repository.GetByIdAsync(id,<#= includeExpressions #>);
+<# } else { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = await repository.GetByIdAsync(id);
+<# } 
+	}
+	else { 
+		if(!String.IsNullOrEmpty(includeExpressions)) { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(id,<#= includeExpressions #>);
+<# } else { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(id);
+<# } 
+	} #>
+			if (<#= ModelVariable #> == null)
+			{
+				return HttpNotFound();
+			}
+			return PartialView("Details",<#= ModelVariable #>);
+		}
+
+		// GET: <#= routePrefix #>/Create
+		[HttpGet]
+		public ActionResult Create()
+		{
+			<#= ModelTypeName #> <#= ModelVariable #> = new <#= ModelTypeName #>();
+<# foreach (var property in relatedProperties.Values) { #>
+			IEntityService<<#= property.TypeName #>> <#= property.ShortTypeName #>repository = new EntityService<<#= property.TypeName #>>(db);
+			ViewData["<#= property.ForeignKeyPropertyNames[0] #>"] = new SelectList(<#= property.ShortTypeName #>repository.GetAll(), "<#= property.PrimaryKeyNames[0] #>", "<#= property.DisplayPropertyName #>");
+<# } #>
+			return PartialView("Create",<#= ModelVariable #>);
+		}
+
+		// POST: <#= routePrefix #>/Create
+<# if (IsOverpostingProtectionRequired) {
+	foreach (var line in OverpostingWarningMessage.Split(new string[] { Environment.NewLine }, StringSplitOptions.None)) { 
+#>
+		// <#= line #>
+<# } } #>
+		[HttpPost]
+		[ValidateAntiForgeryToken]
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Create(<#= bindAttribute #><#= ModelTypeName #> <#= ModelVariable #>)
+<# } else { #>
+		public ActionResult Create(<#= bindAttribute #><#= ModelTypeName #> <#= ModelVariable #>)
+<# } #>
+		{
+			if (ModelState.IsValid)
+			{
+<# if(!String.IsNullOrEmpty(primaryKeyType) && String.Equals("System.Guid", primaryKeyType, StringComparison.OrdinalIgnoreCase)) { #>
+				<#= ModelVariable #>.<#= primaryKeyName #> = Guid.NewGuid();
+<# } #>
+				repository.Add(<#= ModelVariable #>);
+<# if (UseAsync) {#>
+				await repository.CommitAsync();
+<# } else { #>
+				repository.Commit();
+<# } #>
+				return Json(new { success = true });
+			}
+
+<# foreach (var property in relatedProperties.Values) { #>
+			IEntityService<<#= property.TypeName #>> <#= property.ShortTypeName #>repository = new EntityService<<#= property.TypeName #>>(db);
+			ViewData["<#= property.ForeignKeyPropertyNames[0] #>"] = new SelectList(<#= property.ShortTypeName #>repository.GetAll(), "<#= property.PrimaryKeyNames[0] #>", "<#= property.DisplayPropertyName #>", <#= ModelVariable #>.<#= property.ForeignKeyPropertyNames[0] #>);
+<# } #>
+			return PartialView(<#= ModelVariable #>);
+		}
+
+		// GET: <#= routePrefix #>/Edit/5
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Edit(<#= primaryKeyNullableTypeName #> id)
+<# } else { #>
+		public ActionResult Edit(<#= primaryKeyNullableTypeName #> id)
+<# } #>
+		{
+			if (id == null)
+			{
+				return new HttpStatusCodeResult(HttpStatusCode.BadRequest);
+			}
+<# if (UseAsync) { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = await repository.GetByIdAsync(id);
+<# } else { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(id);
+<# } #>
+			if (<#= ModelVariable #> == null)
+			{
+				return HttpNotFound();
+			}
+<# foreach (var property in relatedProperties.Values) { #>
+			IEntityService<<#= property.TypeName #>> <#= property.ShortTypeName #>repository = new EntityService<<#= property.TypeName #>>(db);
+			ViewData["<#= property.ForeignKeyPropertyNames[0] #>"] = new SelectList(<#= property.ShortTypeName #>repository.GetAll(), "<#= property.PrimaryKeyNames[0] #>", "<#= property.DisplayPropertyName #>", <#= ModelVariable #>.<#= property.ForeignKeyPropertyNames[0] #>);
+<# } #>
+			return PartialView("Edit",<#= ModelVariable #>);
+		}
+
+		// POST: <#= routePrefix #>/Edit/5
+<# if (IsOverpostingProtectionRequired) {
+	foreach (var line in OverpostingWarningMessage.Split(new string[] { Environment.NewLine }, StringSplitOptions.None)) { 
+#>
+		// <#= line #>
+<# } } #>
+		[HttpPost]
+		[ValidateAntiForgeryToken]
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Edit(<#= bindAttribute #><#= ModelTypeName #> <#= ModelVariable #>)
+<# } else { #>
+		public ActionResult Edit(<#= bindAttribute #><#= ModelTypeName #> <#= ModelVariable #>)
+<# } #>
+		{
+			if (ModelState.IsValid)
+			{
+				repository.Update(<#= ModelVariable #>);
+<# if (UseAsync) { #>
+				await repository.CommitAsync();
+<# } else { #>
+				repository.Commit();
+<# } #>
+				return Json(new { success = true });
+			}
+<# foreach (var property in relatedProperties.Values) { #>
+			IEntityService<<#= property.TypeName #>> <#= property.ShortTypeName #>repository = new EntityService<<#= property.TypeName #>>(db);
+			ViewData["<#= property.ForeignKeyPropertyNames[0] #>"] = new SelectList(<#= property.ShortTypeName #>repository.GetAll(), "<#= property.PrimaryKeyNames[0] #>", "<#= property.DisplayPropertyName #>", <#= ModelVariable #>.<#= property.ForeignKeyPropertyNames[0] #>);
+<# } #>
+			return PartialView("Edit", <#= ModelVariable #>);
+		}
+
+		// GET: <#= routePrefix #>/Delete/5
+<# if (UseAsync) { #>
+		public async Task<ActionResult> Delete(<#= primaryKeyNullableTypeName #> id)
+<# } else { #>
+		public ActionResult Delete(<#= primaryKeyNullableTypeName #> id)
+<# } #>
+		{
+			if (id == null)
+			{
+				return new HttpStatusCodeResult(HttpStatusCode.BadRequest);
+			}
+<# if (UseAsync) {
+	if(!String.IsNullOrEmpty(includeExpressions)) { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = await repository.GetByIdAsync(id,<#= includeExpressions #>);
+<# } else { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = await repository.GetByIdAsync(id);
+<# } 
+	}
+	else { 
+		if(!String.IsNullOrEmpty(includeExpressions)) { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(id,<#= includeExpressions #>);
+<# } else { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(id);
+<# } 
+	} #>
+			if (<#= ModelVariable #> == null)
+			{
+				return HttpNotFound();
+			}
+			return PartialView("Delete",<#= ModelVariable #>);
+		}
+
+		// POST: <#= routePrefix #>/Delete/5
+		[HttpPost, ActionName("Delete")]
+		[ValidateAntiForgeryToken]
+<# if (UseAsync) { #>
+		public async Task<ActionResult> DeleteConfirmed(<#= primaryKeyShortTypeName #> id)
+<# } else { #>
+		public ActionResult DeleteConfirmed(<#= primaryKeyShortTypeName #> id)
+<# } #>
+		{
+<# if (UseAsync) { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = await repository.GetByIdAsync(id);
+<# } else { #>
+			<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(id);
+<# } #>
+			repository.Remove(<#= ModelVariable #>);
+<# if (UseAsync) { #>
+			await repository.CommitAsync();
+<# } else { #>
+			repository.Commit();
+<# } #>
+			return Json(new { success = true });
+		}
+		
+		[HttpPost]
+<# if (UseAsync) { #>
+		public Task<ActionResult> DeleteSelected(string[] ids)
+<# } else { #>
+		public ActionResult DeleteSelected(string[] ids)
+<# } #>
+		{
+			if (ids != null)
+			{
+				long key = 0;
+				foreach (string id in ids)
+				{
+					if (long.TryParse(id, out key))
+					{
+						<#= ModelTypeName #> <#= ModelVariable #> = repository.GetById(key);
+						repository.Remove(<#= ModelVariable #>);
+					}
+					else
+					{
+						return Json(new { success = false });
+					}
+				}
+<# if (UseAsync) { #>
+					await repository.CommitAsync();
+<# } else { #>
+					repository.Commit();
+<# } #>
+				return Json(new { success = true });
+			}
+			return Json(new { success = false });
+		}
+		
+		[HttpPost]
+<# if (UseAsync) { #>
+		public Task<ActionResult> Export(ExportParameters model)
+<# } else { #>
+		public ActionResult Export(ExportParameters model)
+<# } #>
+		{
+<# if(!String.IsNullOrEmpty(includeExpressions)) { #>
+			var records = repository.GetAll(<#= includeExpressions #>).OrderBy("Id DESC").AsEnumerable<<#= ModelTypeName #>>();
+<# }  else { #>
+			var records = repository.GetAll().OrderBy("Id DESC").AsEnumerable<<#= ModelTypeName #>>();
+<# } #>
+			if (model.PagingEnabled && model.Range.ToString() != "All")
+			{
+				records = records.Skip((model.CurrentPage - 1) * model.PageSize)
+				   .Take(model.PageSize);
+			}
+			if (model.OutputType.Equals(Output.Excel))
+			{
+				var excelFormatter = new ExcelFormatter<<#= ModelTypeName #>>(records);
+				return new ExcelResult(excelFormatter.WriteHtmlTable(), "<#= ModelTypeName #>.xls");
+			}
+			if (model.OutputType.Equals(Output.Csv))
+			{
+				return new CsvResult<<#= ModelTypeName #>>(records.AsQueryable(), "<#= ModelTypeName #>.csv");
+			}
+			return Json(new { success = false });
+		}
+		
+		protected override void Dispose(bool disposing)
+		{
+			if (disposing)
+			{
+				repository.Dispose();
+			}
+			base.Dispose(disposing);
+		}
+	}
+}
+<#+
+// This function converts the primary key short type name to its nullable equivalent when possible. This is required to make
+// sure that an HTTP 400 error is thrown when the user tries to access the edit, delete, or details action with null values.
+	string GetNullableTypeName(string typeName, string shortTypeName)
+	{
+		// The exceptions are caught because if for any reason the type is user defined, then the short type name will be used.
+		// In that case the user will receive a server error if null is passed to the edit, delete, or details actions.
+		Type primaryKeyType = null;
+		try
+		{
+			primaryKeyType = Type.GetType(typeName);
+		}
+		catch
+		{
+		}
+		if (primaryKeyType != null && (primaryKeyType.IsPrimitive || IsGuid(typeName)))
+		{
+			return shortTypeName + "?";
+		}
+		return shortTypeName;
+	}
+
+	bool IsGuid(string typeName) {
+		return String.Equals("System.Guid", typeName, StringComparison.OrdinalIgnoreCase);
+	}
+#>
