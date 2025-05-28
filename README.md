@@ -8,6 +8,19 @@ These T4 scaffolding templates are designed for ASP.NET MVC and Entity Framework
 
 **Project Context/Dependency Note:** These templates are designed to work optimally within a project structure that includes specific components and namespaces. Notably, dependencies such as `SCMS.ViewModels.PagedList` for pagination and `DAL.Repository.Persistence.IEntityService` for data access (or similarly named/structured components) are expected for full functionality. Please ensure your project incorporates these or equivalent structures for seamless integration.
 
+## Table of Contents
+
+*   [Introduction](#introduction)
+*   [Overview](#overview)
+*   [Table of Contents](#table-of-contents)
+*   [Prerequisites/Dependencies](#prerequisitesdependencies)
+*   [Key Features](#key-features)
+*   [Installation and Setup](#installation-and-setup)
+*   [How to Use](#how-to-use)
+*   [Customization Notes](#customization-notes)
+*   [Project Structure Expectation](#project-structure-expectation)
+*   [License](#license)
+
 ## Prerequisites/Dependencies
 
 Before using these templates, ensure your development environment and project include the following components:
